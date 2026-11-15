@@ -2,11 +2,6 @@
 import re
 import json
 
-# Read application logs from a file
-with open("sample.log", "r", encoding="utf-8") as file:
-    log_text = file.read()
-
-
 # Function to extract information from application logs
 def extract_log_details(log_text):
 
@@ -74,7 +69,12 @@ def extract_log_details(log_text):
 
 
 # Execute the function
+# Execute the function independently
 if __name__ == "__main__":
+
+    # Read the sample log file
+    with open("sample.log", "r", encoding="utf-8") as file:
+        log_text = file.read()
 
     result = extract_log_details(log_text)
 

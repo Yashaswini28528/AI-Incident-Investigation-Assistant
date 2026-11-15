@@ -14,7 +14,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 
 from pydantic import BaseModel, Field
 from source_agent import inspect_source_code
-
+from pydantic import model_validator
 
 # 1. Define the AI investigation report structure
 
@@ -27,6 +27,40 @@ class IncidentAnalysis(BaseModel):
     possible_causes: list[str] = Field(
         description="Unconfirmed hypotheses that could explain the error"
     )
+    
+    
+    confirmed_findings: list[str] = Field(
+        description="Facts directly supported by the uploaded logs, "
+                    "retrieved knowledge, or inspected source code"
+    )
+    
+    finding_sources: list[str] = Field(
+        description=(
+            "Evidence source corresponding to each confirmed finding, "
+            "such as uploaded log, retrieved knowledge, or inspected source code"
+        )
+    )
+    
+    investigation_metadata: dict = Field(
+        description=(
+            "Details about the investigation process, "
+            "including whether source-code inspection was performed "
+            "and the reason for that decision"
+        )
+    )
+
+
+
+    unverified_assumptions: list[str] = Field(
+        description="Possible explanations that have not yet "
+                    "been confirmed with evidence"
+    )
+
+    confidence: Literal["high", "medium", "low"] = Field(
+        description="Confidence level in the overall investigation "
+                    "based on the available evidence"
+    )
+
 
     recommended_checks: list[str] = Field(
         description="Practical steps to investigate the possible causes"
@@ -43,6 +77,19 @@ class IncidentAnalysis(BaseModel):
     follow_up_questions: list[str] = Field(
         description="Specific questions to ask the developer for missing evidence"
     )
+    
+    
+class InvestigationDecision(BaseModel):
+
+    inspect_source_code: bool = Field(
+        description="Whether source-code inspection is necessary "
+                    "to investigate this incident"
+    )
+
+    reason: str = Field(
+        description="Why source-code inspection is or is not needed"
+    )
+
 
 class AnswerValidation(BaseModel):
 
@@ -64,6 +111,86 @@ class AnswerValidation(BaseModel):
 parser = PydanticOutputParser(
     pydantic_object=IncidentAnalysis
 )
+
+# 1. Parser for the source-code investigation decision
+decision_parser = PydanticOutputParser(
+    pydantic_object=InvestigationDecision
+)
+
+
+# 2. Prompt that asks the AI whether source inspection is needed
+decision_prompt = ChatPromptTemplate.from_template("""
+You are an AI incident investigation assistant.
+
+Decide whether inspecting application source code is necessary
+to investigate the incident.
+
+Incident details:
+Service: {service}
+Error Type: {error_type}
+Error Message: {error_message}
+Stack Trace: {stack_trace}
+Code Locations: {code_locations}
+Additional Information: {additional_information}
+
+Guidelines:
+- Inspect source code when understanding the error requires
+  examining application logic.
+- Do not request source inspection when the available evidence
+  is already sufficient.
+- If no code locations are available, source inspection is
+  generally not possible.
+- Do not assume a root cause without evidence.
+
+
+CONFIRMED FINDINGS:
+- Include only facts directly supported by the available evidence.
+- Use log details, retrieved knowledge, and inspected source-code observations.
+- Never treat a possible cause as a confirmed finding.
+- If no facts can be confirmed, return an empty list.
+
+UNVERIFIED ASSUMPTIONS:
+- Include possible explanations that still need verification.
+- Clearly distinguish assumptions from confirmed findings.
+- Do not present assumptions as established root causes.
+
+CONFIDENCE:
+- HIGH: Strong, direct evidence supports the main conclusion.
+- MEDIUM: Some supporting evidence exists, but important details remain unverified.
+- LOW: Evidence is limited, incomplete, or supports several possible explanations.
+
+EVIDENCE TRACEABILITY:
+- For every confirmed finding, identify its exact evidence source.
+- Use sources such as uploaded log, retrieved knowledge, or inspected source code.
+- Be specific where possible, such as "Uploaded log - Error field".
+- The finding_sources list must correspond to confirmed_findings in the same order.
+- Never invent an evidence source.
+- If a finding has no identifiable source, do not include it as a confirmed finding.
+- If confirmed_findings is empty, finding_sources must also be empty.
+
+INVESTIGATION METADATA:
+- Record whether source-code inspection was actually performed.
+- Set source_code_inspected to true only if the source-code inspection tool was called and returned source-code content.
+- Set it to false if inspection was skipped or no source code could be inspected.
+- Include the actual reason for performing or skipping inspection.
+- Do not treat investigation activities as confirmed incident findings.
+- Do not include investigation decisions or activities in confirmed_findings.
+- Confirmed findings must describe facts about the incident, not actions performed by the AI.
+
+- For findings about missing stack traces or code locations, use
+  "Uploaded log - Stack trace and code locations" as the source.
+- Never use "Source-code inspection not performed" as the source
+  for a finding about missing log information.
+
+
+
+
+{format_instructions}
+""")
+
+
+# 3. Connect the prompt, Groq model and parser
+decision_chain = decision_prompt | llm | decision_parser
 
 
 # 3. Connect to the Groq-hosted GPT-OSS model
@@ -157,6 +284,45 @@ Important rules:
   the source code was unavailable.
 - Never claim a root cause is confirmed without sufficient evidence.
 
+IMPORTANT SOURCE-CODE EVIDENCE RULES:
+
+1. Source-code findings are the actual output of the source-code
+   inspection agent. Treat them as evidence.
+
+2. Clearly mention which files were found and what their
+   actual functions do.
+
+3. Do not say source code is unavailable if the inspection
+   agent successfully read a file.
+
+4. Never invent function names, implementations, or behavior.
+
+5. Do not assume a missing file caused the incident.
+
+6. Separate confirmed observations from possible causes.
+
+7. If the inspected code does not establish the root cause,
+   explicitly state that the root cause remains unconfirmed.
+   8. Do not automatically treat unusual or incomplete code
+   as the cause of an incident.
+
+8. A possible code defect must not be presented as the
+   cause of an exception unless the execution flow
+   supports that conclusion.
+
+9. If the stack trace references a function that is
+    absent from the inspected source files, report
+    this as a discrepancy. Do not invent its implementation.
+
+10. Keep these three categories separate:
+    - Confirmed observations
+    - Possible causes requiring verification
+    - Information still missing
+
+11. Never claim that a missing source file or function
+    caused an incident merely because it was not available
+    for inspection.
+
 {format_instructions}
 """)
 
@@ -238,6 +404,7 @@ def validate_developer_answer(
 
 # 8. Main reusable investigation function
 
+
 def analyze_incident(
     log_text: str,
     additional_information: str = ""
@@ -269,7 +436,6 @@ def analyze_incident(
         retrieved_documents = results["documents"][0]
         retrieved_distances = results["distances"][0]
 
-        # Filter documents using the distance threshold
         relevant_documents = [
             document
             for document, distance in zip(
@@ -293,7 +459,7 @@ def analyze_incident(
     print(retrieved_knowledge)
     print("==============================\n")
 
-    # 4. Generate evidence directly from extracted log data
+    # 4. Generate evidence from extracted log data
     evidence = [
         f"Service: {incident_data['service']}",
         f"Error Type: {incident_data['error_type']}",
@@ -301,19 +467,32 @@ def analyze_incident(
     ]
 
     for location in incident_data["code_locations"]:
-        evidence.append(
-            f"Code Location: {location}"
-        )
+        evidence.append(f"Code Location: {location}")
 
-    # 5. Inspect source code when code locations are available
+    # 5. Ask the AI whether source-code inspection is necessary
+    decision = decision_chain.invoke({
+        "service": incident_data["service"],
+        "error_type": incident_data["error_type"],
+        "error_message": incident_data["error_message"],
+        "stack_trace": incident_data["stack_trace"],
+        "code_locations": json.dumps(
+            incident_data["code_locations"]
+        ),
+        "additional_information": additional_information,
+        "format_instructions": decision_parser.get_format_instructions()
+    })
+
+    print("\n===== INVESTIGATION DECISION =====")
+    print(decision.model_dump())
+    print("==================================\n")
+
+    # 6. Inspect source code only when the AI decides it is necessary
     source_code_findings = (
-        "Source-code inspection was not performed because "
-        "no code locations were provided."
+        "Source-code inspection was not performed."
     )
 
-    if incident_data["code_locations"]:
+    if decision.inspect_source_code and incident_data["code_locations"]:
 
-        # Extract file paths from the parsed code locations
         file_paths = [
             location["file"]
             for location in incident_data["code_locations"]
@@ -334,7 +513,6 @@ def analyze_incident(
             Code Locations:
             {json.dumps(file_paths)}
 
-            Inspect the provided source files if useful.
             Inspect all listed files that are available.
             Only use these exact file paths.
             """
@@ -345,11 +523,25 @@ def analyze_incident(
 
         else:
             source_code_findings = (
-                "Code locations were present, but no valid "
-                "file paths could be extracted."
+                "Source-code inspection was requested, "
+                "but no valid file paths were available."
             )
 
-    # 6. Send extracted information to the AI
+    elif decision.inspect_source_code:
+
+        source_code_findings = (
+            "Source-code inspection was requested, "
+            "but the log did not contain code locations."
+        )
+
+    else:
+
+        source_code_findings = (
+            "Source-code inspection was not considered necessary. "
+            + decision.reason
+        )
+
+    # 7. Generate the final AI investigation report
     response = chain.invoke({
         "service": incident_data["service"],
         "error_type": incident_data["error_type"],
@@ -364,17 +556,48 @@ def analyze_incident(
         "source_code_findings": source_code_findings,
     })
 
-    # 7. Combine AI-generated analysis with Python-generated evidence
+    # 8. Combine AI-generated analysis with Python-generated evidence
+    
+    # 8. Convert the AI response into a Python dictionary
     final_report = response.model_dump()
 
+    # 9. Generate evidence sources using Python
+    final_report["finding_sources"] = generate_finding_sources(
+        final_report["confirmed_findings"],
+        incident_data
+    )
+
+    # 10. Attach the original extracted evidence
     final_report["evidence"] = evidence
 
-    # 8. Return the investigation report
+
+    # 9. Return the investigation report
     return final_report
 
+def generate_finding_sources(confirmed_findings, incident_data):
+
+    finding_sources = []
+
+    has_stack_trace = bool(incident_data.get("stack_trace"))
+    has_code_locations = bool(incident_data.get("code_locations"))
+
+    for finding in confirmed_findings:
+
+        if has_stack_trace or has_code_locations:
+            finding_sources.append(
+                "Uploaded log - Stack trace and code locations"
+            )
+
+        else:
+            finding_sources.append(
+                "Uploaded log - Error details"
+            )
+
+    return finding_sources
 
 
-# 9. Allow standalone testing of this file
+
+# 10. Allow standalone testing of this file
 if __name__ == "__main__":
 
     with open("sample.log", "r", encoding="utf-8") as file:
@@ -383,5 +606,39 @@ if __name__ == "__main__":
     report = analyze_incident(log_text)
 
     print("\n===== AI INCIDENT INVESTIGATION REPORT =====\n")
-
     print(json.dumps(report, indent=4))
+
+    
+    @model_validator(mode="after")
+    def validate_finding_sources(self):
+
+        # Remove investigation activities from incident findings
+        filtered_findings = []
+
+        for finding in self.confirmed_findings:
+
+            finding_lower = finding.lower()
+
+            if (
+                "source-code inspection was not performed" in finding_lower
+                or "source-code inspection was deemed unnecessary" in finding_lower
+                or "source code inspection was not performed" in finding_lower
+            ):
+                continue
+
+            filtered_findings.append(finding)
+
+        self.confirmed_findings = filtered_findings
+
+        # Ensure every finding has one corresponding source
+        if len(self.confirmed_findings) != len(self.finding_sources):
+            raise ValueError(
+                "Every confirmed finding must have exactly one evidence source."
+            )
+
+        # Populate missing unverified assumptions
+        if not self.unverified_assumptions and self.possible_causes:
+            self.unverified_assumptions = self.possible_causes.copy()
+
+        return self
+

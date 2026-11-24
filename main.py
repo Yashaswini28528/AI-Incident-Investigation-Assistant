@@ -56,13 +56,13 @@ async def investigate(file: UploadFile = File(...)):
                 detail="Only .log files are supported"
             )
 
-        log_bytes = await file.read()
+        log_bytes = await file.read(1_000_001)
 
         if len(log_bytes) > 1_000_000:
-            raise HTTPException(
-                status_code=413,
-                detail="File size exceeds the 1 MB limit"
-            )
+         raise HTTPException(
+        status_code=413,
+        detail="File size exceeds the 1 MB limit"
+    )
 
         try:
             log_text = log_bytes.decode("utf-8")

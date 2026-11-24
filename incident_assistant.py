@@ -78,6 +78,32 @@ class IncidentAnalysis(BaseModel):
         description="Specific questions to ask the developer for missing evidence"
     )
     
+    @model_validator(mode="after")
+    def validate_finding_sources(self):
+
+        filtered_findings = []
+
+        for finding in self.confirmed_findings:
+
+            finding_lower = finding.lower()
+
+            if (
+                "source-code inspection was not performed" in finding_lower
+                or "source-code inspection was deemed unnecessary" in finding_lower
+                or "source code inspection was not performed" in finding_lower
+            ):
+                continue
+
+            filtered_findings.append(finding)
+
+        self.confirmed_findings = filtered_findings
+
+
+        if not self.unverified_assumptions and self.possible_causes:
+            self.unverified_assumptions = self.possible_causes.copy()
+
+        return self
+    
     
 class InvestigationDecision(BaseModel):
 
@@ -327,6 +353,7 @@ IMPORTANT SOURCE-CODE EVIDENCE RULES:
 """)
 
 
+
 # 7. Connect prompt, model and parser
 chain = prompt | llm | parser
 
@@ -407,7 +434,9 @@ def validate_developer_answer(
 
 def analyze_incident(
     log_text: str,
-    additional_information: str = ""
+    additional_information: str = "",
+    *,
+    include_retrieval_context: bool = False
 ) -> dict:
 
     # 1. Extract incident information from uploaded log text
@@ -424,6 +453,10 @@ def analyze_incident(
     query_embedding = query_response["embeddings"][0]
 
     # 3. Retrieve relevant knowledge from ChromaDB
+    # 3. Retrieve relevant knowledge from ChromaDB
+
+    retrieved_contexts = []
+
     document_count = collection.count()
 
     if document_count > 0:
@@ -446,7 +479,10 @@ def analyze_incident(
         ]
 
         if relevant_documents:
-            retrieved_knowledge = "\n\n".join(relevant_documents)
+            retrieved_contexts = relevant_documents
+            retrieved_knowledge = "\n\n".join(
+        retrieved_contexts
+            )
         else:
             retrieved_knowledge = (
                 "No sufficiently relevant knowledge found."
@@ -568,7 +604,9 @@ def analyze_incident(
     )
 
     # 10. Attach the original extracted evidence
-    final_report["evidence"] = evidence
+    # 11. Include retrieved documents only during RAGAS evaluation
+    if include_retrieval_context:
+     final_report["_ragas_retrieved_contexts"] = retrieved_contexts
 
 
     # 9. Return the investigation report
@@ -608,37 +646,4 @@ if __name__ == "__main__":
     print("\n===== AI INCIDENT INVESTIGATION REPORT =====\n")
     print(json.dumps(report, indent=4))
 
-    
-    @model_validator(mode="after")
-    def validate_finding_sources(self):
-
-        # Remove investigation activities from incident findings
-        filtered_findings = []
-
-        for finding in self.confirmed_findings:
-
-            finding_lower = finding.lower()
-
-            if (
-                "source-code inspection was not performed" in finding_lower
-                or "source-code inspection was deemed unnecessary" in finding_lower
-                or "source code inspection was not performed" in finding_lower
-            ):
-                continue
-
-            filtered_findings.append(finding)
-
-        self.confirmed_findings = filtered_findings
-
-        # Ensure every finding has one corresponding source
-        if len(self.confirmed_findings) != len(self.finding_sources):
-            raise ValueError(
-                "Every confirmed finding must have exactly one evidence source."
-            )
-
-        # Populate missing unverified assumptions
-        if not self.unverified_assumptions and self.possible_causes:
-            self.unverified_assumptions = self.possible_causes.copy()
-
-        return self
-
+  

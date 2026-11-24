@@ -7,6 +7,7 @@ from incident_assistant import (
 )
 from log_parser import extract_log_details
 import logging
+from starlette.concurrency import run_in_threadpool
 
 
 # 1. Configure logging
@@ -86,7 +87,10 @@ async def investigate(file: UploadFile = File(...)):
                 detail="No identifiable exception found in the log"
             )
 
-        report = analyze_incident(log_text)
+        report = await run_in_threadpool(
+    analyze_incident,
+    log_text
+)
 
         return {
             "message": "Incident investigation completed successfully",
@@ -132,11 +136,12 @@ async def investigate_follow_up(request: FollowUpRequest):
             )
 
         # Validate the developer's answer
-        validation = validate_developer_answer(
-            request.log_text,
-            request.follow_up_questions,
-            request.additional_information
-        )
+        validation = await run_in_threadpool(
+    validate_developer_answer,
+    request.log_text,
+    request.follow_up_questions,
+    request.additional_information
+)
 
         # Stop if the answer is not relevant
         if validation["status"] != "relevant":
@@ -147,10 +152,11 @@ async def investigate_follow_up(request: FollowUpRequest):
             }
 
         # Generate the updated investigation
-        report = analyze_incident(
-            request.log_text,
-            request.additional_information
-        )
+        report = await run_in_threadpool(
+    analyze_incident,
+    request.log_text,
+    request.additional_information
+)
 
         return {
             "message": "Follow-up investigation completed successfully",

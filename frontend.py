@@ -1,6 +1,7 @@
 
 import streamlit as st
 import requests
+import os
 
 
 # 1. Configure the application page
@@ -12,10 +13,15 @@ st.set_page_config(
 
 
 # 2. FastAPI backend endpoints
-API_URL = "http://127.0.0.1:8000/investigate"
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "http://127.0.0.1:8000"
+)
+
+API_URL = f"{API_BASE_URL}/investigate"
 
 FOLLOW_UP_API_URL = (
-    "http://127.0.0.1:8000/investigate/follow-up"
+    f"{API_BASE_URL}/investigate/follow-up"
 )
 
 
@@ -104,7 +110,7 @@ if uploaded_file is not None:
         log_bytes
     )
 
-    # Reset previous investigation when a new file is uploaded
+    # Reset the investigation when a new file is uploaded
     if current_signature != st.session_state.upload_signature:
 
         st.session_state.upload_signature = current_signature
@@ -180,7 +186,7 @@ if st.session_state.initial_report is not None:
         st.session_state.initial_report
     )
 
-    # Get the latest accepted investigation report
+    # Get the latest investigation report
     if st.session_state.follow_up_history:
 
         latest_report = (
@@ -199,29 +205,32 @@ if st.session_state.initial_report is not None:
         st.header("Additional Information Required")
 
         st.write(
-            "Please provide answers to the following questions "
-            "to improve the investigation:"
+            "Please answer the following new questions. "
+            "Previously submitted answers are retained automatically."
+        )
+
+        current_questions = latest_report.get(
+            "follow_up_questions", []
         )
 
         for i, question in enumerate(
-            latest_report.get("follow_up_questions", []),
+            current_questions,
             start=1
         ):
             st.write(f"{i}. {question}")
 
         current_round = len(
             st.session_state.follow_up_history
-        )
+        ) + 1
 
         with st.form(
             key=f"follow_up_form_{current_round}"
         ):
 
             additional_information = st.text_area(
-                "Enter your answers here",
+                "Enter your answers to the questions above",
                 placeholder=(
-                    "Provide the requested information "
-                    "based on your logs and system observations..."
+                    "Provide only the newly requested information..."
                 ),
                 height=150
             )
@@ -242,8 +251,43 @@ if st.session_state.initial_report is not None:
 
             else:
 
+                # Collect answers from previous rounds
+                previous_answers = [
+                    item["answers"]
+                    for item in st.session_state.follow_up_history
+                ]
+
+                # Collect questions already asked in previous reports
+                previous_questions = []
+
+                all_previous_reports = [
+                    st.session_state.initial_report
+                ]
+
+                all_previous_reports.extend(
+                    item["report"]
+                    for item in st.session_state.follow_up_history
+                )
+
+                for previous_report in all_previous_reports:
+
+                    previous_questions.extend(
+                        previous_report.get(
+                            "follow_up_questions", []
+                        )
+                    )
+
+                # Include the questions being answered in this round.
+                # They must not be repeated in the next report.
+                previous_questions.extend(current_questions)
+
+                # Remove duplicate questions while preserving order
+                previous_questions = list(
+                    dict.fromkeys(previous_questions)
+                )
+
                 with st.spinner(
-                    "AI is validating your response..."
+                    "AI is investigating your additional information..."
                 ):
 
                     try:
@@ -258,9 +302,13 @@ if st.session_state.initial_report is not None:
                                     additional_information
                                 ),
                                 "follow_up_questions": (
-                                    latest_report.get(
-                                        "follow_up_questions", []
-                                    )
+                                    current_questions
+                                ),
+                                "previous_answers": (
+                                    previous_answers
+                                ),
+                                "previous_questions": (
+                                    previous_questions
                                 )
                             },
                             timeout=120
@@ -274,32 +322,23 @@ if st.session_state.initial_report is not None:
                                 "validation", {}
                             )
 
-                            validation_status = validation.get(
-                                "status"
-                            )
+                            updated_report = result.get("report")
 
-                            if validation_status == "relevant":
+                            # An updated report is the important outcome.
+                            # Accept useful partial answers too.
+                            if updated_report is not None:
 
-                                updated_report = result.get("report")
+                                st.session_state.follow_up_history.append({
+                                    "answers": additional_information,
+                                    "report": updated_report
+                                })
 
-                                if updated_report is not None:
+                                st.session_state.validation_message = None
 
-                                    st.session_state.follow_up_history.append({
-                                        "answers": additional_information,
-                                        "report": updated_report
-                                    })
-
-                                    st.session_state.validation_message = None
-
-                                    st.success(
-                                        "Your answers were accepted! "
-                                        "The AI investigation has been updated."
-                                    )
-
-                                else:
-                                    st.error(
-                                        "The AI did not return an updated report."
-                                    )
+                                st.success(
+                                    "Your response has been processed. "
+                                    "The AI investigation has been updated."
+                                )
 
                             else:
 
@@ -329,7 +368,7 @@ if st.session_state.initial_report is not None:
                         )
 
 
-    # 11. Display AI validation response BELOW the answer form
+    # 11. Display AI validation response
     if st.session_state.validation_message:
 
         st.info(
@@ -337,7 +376,7 @@ if st.session_state.initial_report is not None:
         )
 
 
-    # 12. Display updated investigation reports
+    # 12. Display previous and updated investigation reports
     for index, item in enumerate(
         st.session_state.follow_up_history,
         start=1
@@ -356,11 +395,11 @@ if st.session_state.initial_report is not None:
 
         st.caption(
             "AI-generated analysis using the original log "
-            "and the additional information submitted."
+            "and the accumulated investigation information."
         )
 
         with st.expander(
-            "View Developer's Submitted Answers"
+            "View Answers Submitted in This Round"
         ):
             st.write(item["answers"])
 

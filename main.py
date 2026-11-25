@@ -1,6 +1,6 @@
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from incident_assistant import (
     analyze_incident,
     validate_developer_answer
@@ -28,6 +28,8 @@ class FollowUpRequest(BaseModel):
     log_text: str
     additional_information: str
     follow_up_questions: list[str]
+    previous_answers: list[str] = Field(default_factory=list)
+    previous_questions: list[str] = Field(default_factory=list)
 
 
 # 4. Home endpoint
@@ -60,10 +62,10 @@ async def investigate(file: UploadFile = File(...)):
         log_bytes = await file.read(1_000_001)
 
         if len(log_bytes) > 1_000_000:
-         raise HTTPException(
-        status_code=413,
-        detail="File size exceeds the 1 MB limit"
-    )
+            raise HTTPException(
+                status_code=413,
+                detail="File size exceeds the 1 MB limit"
+            )
 
         try:
             log_text = log_bytes.decode("utf-8")
@@ -88,9 +90,9 @@ async def investigate(file: UploadFile = File(...)):
             )
 
         report = await run_in_threadpool(
-    analyze_incident,
-    log_text
-)
+            analyze_incident,
+            log_text
+        )
 
         return {
             "message": "Incident investigation completed successfully",
@@ -135,28 +137,61 @@ async def investigate_follow_up(request: FollowUpRequest):
                 detail="No identifiable exception found in the original log"
             )
 
-        # Validate the developer's answer
+        # Validate only the answers submitted in the current round
         validation = await run_in_threadpool(
-    validate_developer_answer,
-    request.log_text,
-    request.follow_up_questions,
-    request.additional_information
-)
+            validate_developer_answer,
+            request.log_text,
+            request.follow_up_questions,
+            request.additional_information
+        )
 
-        # Stop if the answer is not relevant
-        if validation["status"] != "relevant":
+        status = validation.get("status", "").lower()
+
+        # Reject only greetings and unrelated responses.
+        # Useful partial answers and unavailable information
+        # must still produce an updated investigation.
+        if status in {"greeting", "unrelated"}:
             return {
                 "message": "Additional information needs attention",
                 "validation": validation,
                 "report": None
             }
 
-        # Generate the updated investigation
+        # Retain all previously accepted answers and the current answer
+        all_answers = request.previous_answers + [
+            request.additional_information
+        ]
+
+        # Tell the investigation which questions have already been asked.
+        # This helps prevent the same questions from being repeated.
+        history_context = ""
+
+        if request.previous_questions:
+            history_context = (
+                "QUESTIONS ALREADY ASKED IN PREVIOUS ROUNDS:\n"
+                + "\n".join(
+                    f"- {question}"
+                    for question in request.previous_questions
+                )
+                + "\n\nDo not repeat these questions."
+            )
+
+        cumulative_information = "\n\n".join(all_answers)
+
+        if history_context:
+            cumulative_information = (
+                history_context
+                + "\n\nANSWERS RECEIVED SO FAR:\n"
+                + cumulative_information
+            )
+
+        # Generate an updated report even when the answer is partial
+        # or the requested information is unavailable.
         report = await run_in_threadpool(
-    analyze_incident,
-    request.log_text,
-    request.additional_information
-)
+            analyze_incident,
+            request.log_text,
+            cumulative_information
+        )
 
         return {
             "message": "Follow-up investigation completed successfully",

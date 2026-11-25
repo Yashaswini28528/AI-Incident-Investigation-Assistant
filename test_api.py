@@ -328,7 +328,7 @@ def test_rejects_irrelevant_follow_up_information():
     with patch(
         "main.validate_developer_answer",
         return_value={
-            "status": "irrelevant",
+            "status": "unrelated",
             "reason": "The answer does not address the question."
         }
     ) as mock_validation:
@@ -356,7 +356,7 @@ def test_rejects_irrelevant_follow_up_information():
 
     assert response.json()["report"] is None
 
-    assert response.json()["validation"]["status"] == "irrelevant"
+    assert response.json()["validation"]["status"] == "unrelated"
 
     mock_validation.assert_called_once()
 

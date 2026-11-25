@@ -1,6 +1,6 @@
 
 import json
-
+import os
 import chromadb
 import ollama
 from typing import Literal
@@ -122,6 +122,7 @@ class AnswerValidation(BaseModel):
     status: Literal[
         "relevant",
         "partially_relevant",
+        "unavailable",
         "greeting",
         "unrelated"
     ] = Field(
@@ -167,6 +168,13 @@ Guidelines:
 - If no code locations are available, source inspection is
   generally not possible.
 - Do not assume a root cause without evidence.
+- Consider all additional information from previous investigation rounds.
+- Do not request source-code inspection again if the available
+  source-code findings already address the relevant code locations.
+- Do not treat unavailable developer information as evidence
+  that source-code inspection will necessarily solve the problem.
+- Prefer source inspection only when examining actual application
+  logic could materially help investigate the incident.
 
 
 CONFIRMED FINDINGS:
@@ -220,7 +228,13 @@ decision_chain = decision_prompt | llm | decision_parser
 
 
 # 3. Connect to the Groq-hosted GPT-OSS model
+# Configure Ollama connection
+OLLAMA_HOST = os.getenv(
+    "OLLAMA_HOST",
+    "http://127.0.0.1:11434"
+)
 
+ollama_client = ollama.Client(host=OLLAMA_HOST)
 
 
 # 4. Connect to ChromaDB
@@ -285,30 +299,42 @@ Your responsibilities:
    - Identify the specific missing information needed for further investigation.
 
 5. Follow-up Investigation:
-   - Decide whether additional evidence is required.
-   - Set needs_more_information to true if important evidence is missing.
-   - Generate specific follow-up questions for the developer.
-   - Ask only questions relevant to the current incident.
-   - If sufficient evidence is available, set needs_more_information to false
-     and return an empty follow_up_questions list.
 
-Important rules:
+   - Decide whether additional evidence could materially improve
+     the investigation.
+   - Set needs_more_information to true only when a specific,
+     useful piece of evidence is still missing.
+   - Ask only questions that could help distinguish between
+     plausible causes or confirm an important finding.
+   - Generate a maximum of TWO follow-up questions.
+   - If sufficient evidence exists for a useful investigation,
+     set needs_more_information to false and return an empty
+     follow_up_questions list.
 
-- Keep the entire report concise and developer-friendly.
-- Never provide long lists or lengthy explanations.
-- Never invent facts, file names or line numbers.
-- Use only the supplied logs, code locations and retrieved knowledge.
-- Distinguish observed facts from unconfirmed hypotheses.
-- If evidence supports only one possible cause, provide only one.
-- Never claim that a root cause is confirmed without sufficient evidence.
-- Never ask unnecessary follow-up questions.
-- Do not claim that an incident is resolved merely because a report was generated.
-- Use source-code findings only when they are available.
-- Distinguish actual code observations from possible causes.
-- Do not assume that inspected code caused the exception.
-- If source-code inspection could not find a file, mention that
-  the source code was unavailable.
-- Never claim a root cause is confirmed without sufficient evidence.
+   IMPORTANT FOLLOW-UP HISTORY RULES:
+
+   - Additional Information Provided by Developer may contain
+     answers from multiple investigation rounds.
+   - It may also contain questions already asked in previous rounds.
+   - Read the entire history before generating new questions.
+   - Never repeat a question that has already been asked.
+   - Never ask again for information the developer explicitly
+     stated is unavailable.
+   - Treat unavailable information as a known limitation,
+     not as an unanswered request.
+   - If information is unavailable, explain the limitation
+     in uncertainty and recommend an alternative way to collect
+     useful evidence, if one exists.
+   - Do not repeatedly ask for the same logs, tokens,
+     timestamps, configurations, or other evidence.
+   - Do not require every question to be answered before
+     generating an updated investigation.
+   - Always produce the best possible updated report using
+     the evidence currently available.
+   - A partially answered investigation is still useful.
+   - Lower confidence when important evidence is missing.
+   - Ask another question only when the answer could
+     materially change the investigation.
 
 IMPORTANT SOURCE-CODE EVIDENCE RULES:
 
@@ -363,9 +389,9 @@ validation_parser = PydanticOutputParser(
 )
 
 validation_prompt = ChatPromptTemplate.from_template("""
-You are an answer validation assistant for an AI Incident Investigation system.
+You are an answer validation assistant for an AI incident investigation system.
 
-Your job is to understand the developer's message and classify it.
+Your task is to classify the developer's response.
 
 Original incident:
 {incident_error}
@@ -373,38 +399,48 @@ Original incident:
 Investigation questions:
 {follow_up_questions}
 
-Developer's message:
+Developer's response:
 {developer_answer}
 
-Classify the message into exactly one category:
+Classify the response into exactly one category:
 
 1. relevant:
-The message provides useful information that helps answer the investigation questions.
+The developer provides useful information that answers
+or helps answer the investigation questions.
 
 2. partially_relevant:
-The message provides some useful incident information but important details are still missing.
+The developer provides some useful incident information,
+but some requested details are still missing.
 
-3. greeting:
-The message contains greetings or casual conversation such as:
-Hi, hello, how are you, have you had lunch, or have you had dinner.
+3. unavailable:
+The developer explicitly says they do not know, cannot access,
+cannot retrieve, or do not have the requested information.
 
-4. unrelated:
-The message contains requests or questions unrelated to incident investigation,
-such as predicting the future, writing poems, jokes, general knowledge questions,
-or unrelated personal questions.
+Examples:
+- "I don't have access to the server logs."
+- "We cannot retrieve the original token."
+- "The monitoring system does not retain that information."
+- "I am unable to verify this."
+
+4. greeting:
+The message is only a greeting or casual conversation.
+
+5. unrelated:
+The message is unrelated to the incident investigation.
 
 Important rules:
-- Understand the meaning of the message, not just individual keywords.
-- Do not classify greetings as relevant evidence.
-- Do not invent incident information.
-- If the message contains both useful evidence and casual conversation,
-  classify it based on the useful evidence.
-- For greetings, respond naturally and politely, then guide the developer
-  back to the investigation.
-- For unrelated messages, politely explain that you are an incident
-  investigation assistant and redirect the developer.
-- For partially relevant messages, ask for the missing details.
-- For relevant messages, acknowledge the useful information.
+
+- Understand the meaning, not just individual keywords.
+- If a response contains useful evidence and a greeting,
+  classify it according to the useful evidence.
+- If the developer says information is unavailable,
+  classify it as unavailable, not partially_relevant.
+- Never invent evidence.
+- Never reject a useful partial answer.
+- Do not ask the developer additional questions here.
+- This component only classifies the response.
+- For greetings and unrelated messages, politely redirect
+  the developer to the incident investigation.
 
 {format_instructions}
 """)
@@ -445,10 +481,10 @@ def analyze_incident(
     # 2. Generate an embedding for the application error
     query = incident_data["error_message"]
 
-    query_response = ollama.embed(
-        model="nomic-embed-text",
-        input=query
-    )
+    query_response = ollama_client.embed(
+    model="nomic-embed-text",
+    input=query
+)
 
     query_embedding = query_response["embeddings"][0]
 

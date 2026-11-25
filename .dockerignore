@@ -1,0 +1,43 @@
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Testing cache and temporary files
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git repository
+.git/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Persistent ChromaDB data
+chroma_db/
+
+# Local log files
+**/*.log
+
+# Test files
+test_*.py
+*_test.py
+chroma_test.py
+embedding_test.py
+langchain_test.py
+groq_test.py
+
+# Evaluation scripts (not needed in production image)
+evaluate_incidents.py
+ragas_evaluation.py
+
+# Operating system files
+.DS_Store
+Thumbs.db

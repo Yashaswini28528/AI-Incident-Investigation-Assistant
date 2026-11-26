@@ -1,8 +1,6 @@
-
 import json
 import os
 import chromadb
-import ollama
 from typing import Literal
 
 from log_parser import extract_log_details
@@ -15,6 +13,8 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 from source_agent import inspect_source_code
 from pydantic import model_validator
+from embedding_config import embeddings
+from pathlib import Path
 
 # 1. Define the AI investigation report structure
 
@@ -228,13 +228,7 @@ decision_chain = decision_prompt | llm | decision_parser
 
 
 # 3. Connect to the Groq-hosted GPT-OSS model
-# Configure Ollama connection
-OLLAMA_HOST = os.getenv(
-    "OLLAMA_HOST",
-    "http://127.0.0.1:11434"
-)
 
-ollama_client = ollama.Client(host=OLLAMA_HOST)
 
 
 # 4. Connect to ChromaDB
@@ -245,6 +239,57 @@ client = chromadb.PersistentClient(
 collection = client.get_or_create_collection(
     name="incident_knowledge"
 )
+
+
+def initialize_knowledge_base():
+
+    knowledge_folder = Path(__file__).resolve().parent / "knowledge_base"
+
+    knowledge_files = sorted(knowledge_folder.glob("*.md"))
+
+    if not knowledge_files:
+        raise FileNotFoundError(
+            "No Markdown knowledge files found in knowledge_base."
+        )
+
+    # Get documents already stored in ChromaDB
+    existing_data = collection.get(include=["documents"])
+
+    existing_documents = dict(
+        zip(
+            existing_data["ids"],
+            existing_data["documents"] or []
+        )
+    )
+
+    for file_path in knowledge_files:
+
+        document_id = file_path.stem + "_001"
+
+        document_text = file_path.read_text(encoding="utf-8")
+
+        # Skip documents that are already indexed and unchanged
+        if existing_documents.get(document_id) == document_text:
+            print(f"Already indexed: {file_path.name}")
+            continue
+
+        # Generate Gemini embeddings
+        document_embedding = embeddings.embed_documents(
+            [document_text]
+        )[0]
+
+        # Store or update the document in ChromaDB
+        collection.upsert(
+            ids=[document_id],
+            documents=[document_text],
+            embeddings=[document_embedding],
+            metadatas=[{"topic": file_path.stem}]
+        )
+
+        print(f"Indexed successfully: {file_path.name}")
+
+    print("Knowledge base initialization completed.")
+initialize_knowledge_base()
 
 
 # 5. Configure retrieval settings
@@ -481,12 +526,7 @@ def analyze_incident(
     # 2. Generate an embedding for the application error
     query = incident_data["error_message"]
 
-    query_response = ollama_client.embed(
-    model="nomic-embed-text",
-    input=query
-)
-
-    query_embedding = query_response["embeddings"][0]
+    query_embedding = embeddings.embed_query(query)
 
     # 3. Retrieve relevant knowledge from ChromaDB
     # 3. Retrieve relevant knowledge from ChromaDB

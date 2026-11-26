@@ -1,28 +1,26 @@
 
-import ollama
+from embedding_config import embeddings
+import math
 
 # Two sentences to compare
 sentence1 = "Database connection timeout"
 
 sentence2 = "The application cannot connect to the database"
 
-# Generate embeddings for both sentences
-response = ollama.embed(
-    model="nomic-embed-text",
-    input=[sentence1, sentence2]
+# Generate Gemini embeddings for both sentences
+vectors = embeddings.embed_documents(
+    [sentence1, sentence2]
 )
 
 # Extract both vectors
-embedding1 = response["embeddings"][0]
-embedding2 = response["embeddings"][1]
+embedding1 = vectors[0]
+embedding2 = vectors[1]
 
 # Display dimensions
 print("Sentence 1 dimensions:", len(embedding1))
 print("Sentence 2 dimensions:", len(embedding2))
 
 # Compare the vectors using cosine similarity
-import math
-
 dot_product = sum(
     a * b for a, b in zip(embedding1, embedding2)
 )

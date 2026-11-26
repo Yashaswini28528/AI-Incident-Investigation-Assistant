@@ -8,13 +8,9 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
-    environment:
-      OLLAMA_HOST: http://host.docker.internal:11434
+      - "8000:10000"
     volumes:
       - ./chroma_db:/app/chroma_db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   frontend:
     build:
@@ -24,6 +20,6 @@ services:
     ports:
       - "8501:8501"
     environment:
-      API_BASE_URL: http://backend:8000
+      API_BASE_URL: http://backend:10000
     depends_on:
       - backend

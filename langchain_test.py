@@ -1,8 +1,9 @@
 
-from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
+
+from llm_config import llm
 
 
 # Define the structure of the AI response
@@ -20,13 +21,6 @@ class IncidentAnalysis(BaseModel):
 # Create an output parser
 parser = PydanticOutputParser(
     pydantic_object=IncidentAnalysis
-)
-
-
-# Connect to our local LLM
-llm = ChatOllama(
-    model="qwen2.5:0.5b",
-    temperature=0.5
 )
 
 

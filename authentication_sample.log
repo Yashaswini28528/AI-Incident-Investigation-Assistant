@@ -1,8 +1,0 @@
-
-2026-11-14 14:30:00
-Service: AuthService
-RequestId: REQ-2048
-
-AuthenticationError: Access token expired
-
-The authentication service rejected the user's request.

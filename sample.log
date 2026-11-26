@@ -1,3 +1,0 @@
-Service: AuthenticationService
-Error: Invalid API token
-Message: The API token provided by the client is invalid.

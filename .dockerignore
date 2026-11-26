@@ -22,6 +22,7 @@ __pycache__/
 
 # Persistent ChromaDB data
 chroma_db/
+chroma_db_backup/
 
 # Local log files
 **/*.log
